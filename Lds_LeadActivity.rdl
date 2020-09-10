@@ -1,0 +1,1745 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Report xmlns="http://schemas.microsoft.com/sqlserver/reporting/2016/01/reportdefinition" xmlns:rd="http://schemas.microsoft.com/SQLServer/reporting/reportdesigner">
+  <AutoRefresh>0</AutoRefresh>
+  <DataSources>
+    <DataSource Name="LocalDatabase">
+      <DataSourceReference>LocalDatabase</DataSourceReference>
+      <rd:SecurityType>None</rd:SecurityType>
+      <rd:DataSourceID>44f427f7-563b-4baa-acf6-79c2ad0e5cc3</rd:DataSourceID>
+    </DataSource>
+  </DataSources>
+  <DataSets>
+    <DataSet Name="Users">
+      <Query>
+        <DataSourceName>LocalDatabase</DataSourceName>
+        <CommandText>select ItemId, FileAs from
+(
+	select '11111111-1111-1111-1111-111111111111' as ItemId, '('+dbo.Translate('All')+')' as FileAs
+	union
+	SELECT ItemId, FileAs
+	  FROM [dbo].[Users]
+	  where Active = 1 and IsSystem=0
+) x
+ order by FileAs</CommandText>
+        <rd:UseGenericDesigner>true</rd:UseGenericDesigner>
+      </Query>
+      <Fields>
+        <Field Name="ItemId">
+          <DataField>ItemId</DataField>
+          <rd:TypeName>System.Guid</rd:TypeName>
+        </Field>
+        <Field Name="FileAs">
+          <DataField>FileAs</DataField>
+          <rd:TypeName>System.String</rd:TypeName>
+        </Field>
+      </Fields>
+    </DataSet>
+    <DataSet Name="Formats">
+      <Query>
+        <DataSourceName>LocalDatabase</DataSourceName>
+        <CommandType>StoredProcedure</CommandType>
+        <CommandText>eWaySPLocal_GetReportFormats</CommandText>
+      </Query>
+      <Fields>
+        <Field Name="DateFormat">
+          <DataField>DateFormat</DataField>
+          <rd:TypeName>System.String</rd:TypeName>
+        </Field>
+        <Field Name="CurrencyFormat">
+          <DataField>CurrencyFormat</DataField>
+          <rd:TypeName>System.String</rd:TypeName>
+        </Field>
+        <Field Name="PercentFormat">
+          <DataField>PercentFormat</DataField>
+          <rd:TypeName>System.String</rd:TypeName>
+        </Field>
+        <Field Name="DaysFormat">
+          <DataField>DaysFormat</DataField>
+          <rd:TypeName>System.String</rd:TypeName>
+        </Field>
+        <Field Name="DaysFloatFormat">
+          <DataField>DaysFloatFormat</DataField>
+          <rd:TypeName>System.String</rd:TypeName>
+        </Field>
+        <Field Name="HoursFormat">
+          <DataField>HoursFormat</DataField>
+          <rd:TypeName>System.String</rd:TypeName>
+        </Field>
+        <Field Name="DateOnlyFormat">
+          <DataField>DateOnlyFormat</DataField>
+          <rd:TypeName>System.String</rd:TypeName>
+        </Field>
+        <Field Name="DefaultCurrency">
+          <DataField>DefaultCurrency</DataField>
+          <rd:TypeName>System.String</rd:TypeName>
+        </Field>
+        <Field Name="NumberFormat">
+          <DataField>NumberFormat</DataField>
+          <rd:TypeName>System.String</rd:TypeName>
+        </Field>
+      </Fields>
+    </DataSet>
+    <DataSet Name="Main">
+      <Query>
+        <DataSourceName>LocalDatabase</DataSourceName>
+        <QueryParameters>
+          <QueryParameter Name="@SalesManager">
+            <Value>=Parameters!SalesManager.Value</Value>
+          </QueryParameter>
+          <QueryParameter Name="@LeadType">
+            <Value>=Parameters!LeadType.Value</Value>
+          </QueryParameter>
+          <QueryParameter Name="@From">
+            <Value>=Parameters!From.Value</Value>
+          </QueryParameter>
+          <QueryParameter Name="@To">
+            <Value>=Parameters!To.Value</Value>
+          </QueryParameter>
+          <QueryParameter Name="@ICL">
+            <Value>=Parameters!ICL.Value</Value>
+          </QueryParameter>
+        </QueryParameters>
+        <CommandText>DECLARE @Leads TABLE(
+	ItemID UNIQUEIDENTIFIER,
+	FileAs NVARCHAR(256),
+	Customer NVARCHAR(256),
+	ContactPerson NVARCHAR(1280),
+	En NVARCHAR(256),
+	StateEn UNIQUEIDENTIFIER,
+	ItemCreated DATETIME,
+	Price FLOAT,
+	Probability FLOAT,
+	OwnerName NVARCHAR(1280),
+	Link NVARCHAR(256),
+	Currency NVARCHAR(256)
+);
+
+INSERT INTO @Leads
+SELECT 
+	Leads.ItemID, Leads.FileAs, dbo.GetLeadCustomer(Leads.ItemID), dbo.GetLeadContactPerson(Leads.ItemID), 
+	dbo.TranslateEnum(EnumValues.ItemID) en, EnumValues.ItemID, Leads.ItemCreated, Leads.Price, Leads.Probability, Users.FileAs,
+	'eway://Leads/' + CAST(Leads.ItemID AS NVARCHAR(256)) AS Link,
+	EnumValuesCurrency.en
+FROM Leads
+	INNER JOIN EnumValues 
+		ON Leads.StateEn = EnumValues.ItemID
+			AND EnumValues.ItemState &lt;&gt; 3
+			AND (@SalesManager = '11111111-1111-1111-1111-111111111111' OR Leads.OwnerGUID = @SalesManager)
+	INNER JOIN dbo.Users 
+		ON Leads.ownerGUID = Users.ItemId 
+			AND Users.ItemState &lt;&gt; 3
+	INNER JOIN EnumValues EnumValuesCurrency ON EnumValuesCurrency.ItemID = Leads.CurrencyEn
+WHERE (Leads.TypeEn = @LeadType OR @LeadType = '00000000-0000-0000-0000-000000000000')
+	AND Leads.ItemState &lt;&gt; 3
+
+-- All activities within the given time
+DECLARE @Activities TABLE(
+	leadGUID UNIQUEIDENTIFIER,
+	itemGUID UNIQUEIDENTIFIER,
+	startDate DATETIME,
+	endDate DATETIME,
+	itemSubject NVARCHAR(1280),
+	itemType NVARCHAR(256),
+	itemOwner NVARCHAR(256),
+	isInFuture BIT,
+	itemTypeOrder TINYINT,
+	dateToView NVARCHAR(256),
+	link NVARCHAR(256)
+)
+
+-- ** FUTURE Tasks &amp; Calendar
+
+-- Tasks
+INSERT INTO @Activities
+	SELECT DISTINCT Leads.itemID, Tasks.ItemID, ISNULL(Tasks.StartDate, Tasks.ItemCreated), Tasks.DueDate, Tasks.FileAs, dbo.Translate('Task'), Users.FileAs, 1 ,1, NULL,
+		'eWay://Tasks/' + CAST(Tasks.ItemID AS NVARCHAR(256)) AS Link
+	FROM @Leads Leads
+		INNER JOIN dbo.Relations LeadsToTaskRelations ON Leads.Itemid = LeadsToTaskRelations.ItemGUID1
+			AND LeadsToTaskRelations.ItemState &lt;&gt; 3
+		INNER JOIN dbo.Tasks ON LeadsToTaskRelations.ItemGUID2 = Tasks.ItemID
+			AND Tasks.ItemState &lt;&gt; 3
+		INNER JOIN dbo.Relations TasksToUsersRelations ON Tasks.ItemId = TasksToUsersRelations.ItemGUID1
+			AND TasksToUsersRelations.ItemState &lt;&gt; 3
+			AND TasksToUsersRelations.RelationType = 'TASKSOLVER'
+		INNER JOIN dbo.[Users] ON TasksToUsersRelations.ItemGUID2 = Users.ItemID 
+			AND Users.ItemState &lt;&gt; 3
+	WHERE Tasks.Complete = 0
+
+-- Calendar
+INSERT INTO @Activities
+	SELECT DISTINCT Leads.ItemID, Calendar.ItemID, StartDate, EndDate, Calendar.FileAs,  dbo.Translate('Calendar'), Users.FileAs, 1 ,1, NULL,
+		'eWay://Calendar/' + CAST(Calendar.ItemID AS NVARCHAR(256)) AS Link
+	FROM @Leads Leads
+		INNER JOIN dbo.Relations LeadsToCalendarRelations ON Leads.Itemid = LeadsToCalendarRelations.ItemGUID1
+			AND LeadsToCalendarRelations.ItemState &lt;&gt; 3
+		INNER JOIN dbo.Calendar ON LeadsToCalendarRelations.ItemGUID2 = Calendar.ItemID
+			AND Calendar.ItemState &lt;&gt; 3
+		INNER JOIN dbo.[Users] ON Calendar.OwnerGUID = Users.ItemId
+			AND Users.ItemState &lt;&gt; 3
+	WHERE StartDate &gt;= DATEADD(DAY, DATEDIFF(DAY, 0, GETDATE()), 0) /* today's midnight */
+			
+			
+-- ** ALL HISTORY
+-- Tasks
+INSERT INTO @Activities
+	SELECT DISTINCT Leads.ItemID, Tasks.ItemID, ISNULL(Tasks.StartDate, Tasks.ItemCreated), Tasks.DueDate, Tasks.FileAs,  dbo.Translate('Task'), Users.FileAs, 0 ,2, NULL,
+		'eWay://Tasks/' + CAST(Tasks.ItemID AS NVARCHAR(256)) AS Link
+	FROM @Leads Leads
+		INNER JOIN dbo.Relations LeadsToTasksRelations ON Leads.ItemID = LeadsToTasksRelations.ItemGUID1
+			AND LeadsToTasksRelations.ItemState &lt;&gt; 3
+		INNER JOIN dbo.Tasks ON LeadsToTasksRelations.ItemGUID2 = Tasks.ItemId
+			AND Tasks.ItemState &lt;&gt; 3
+		INNER JOIN dbo.Relations TasksToUsersRelations ON Tasks.ItemId = TasksToUsersRelations.ItemGUID1 
+			AND TasksToUsersRelations.ItemState &lt;&gt; 3
+			AND TasksToUsersRelations.RelationType = 'TASKSOLVER'
+		INNER JOIN dbo.Users ON Tasks.OwnerGUID = Users.ItemID
+			AND Users.ItemState &lt;&gt; 3
+	WHERE Tasks.Complete = 1
+		AND Tasks.StartDate BETWEEN @From AND DATEADD(dd, +1, @To)
+				
+			
+-- Calendar
+INSERT INTO @Activities
+	SELECT DISTINCT Leads.ItemID, Calendar.ItemID, Calendar.StartDate, Calendar.EndDate, Calendar.FileAs,  dbo.Translate('Calendar'), Users.FileAs, 0 ,2, NULL,
+		'eWay://Calendar/' + CAST(Calendar.ItemID AS NVARCHAR(256)) AS Link
+	FROM @Leads Leads 
+		INNER JOIN dbo.Relations LeadsToCalendarRelations ON Leads.Itemid = LeadsToCalendarRelations.ItemGUID1
+			AND LeadsToCalendarRelations.ItemState &lt;&gt; 3
+		INNER JOIN dbo.Calendar ON LeadsToCalendarRelations.ItemGUID2 = Calendar.ItemID
+			AND Calendar.ItemState &lt;&gt; 3
+		INNER JOIN dbo.Users ON Calendar.OwnerGUID = Users.ItemID
+			AND Users.ItemState &lt;&gt; 3
+	WHERE Calendar.StartDate &lt; DATEADD(DAY, DATEDIFF(DAY, 0, GETDATE()), 0) /* today's midnight */
+		AND Calendar.StartDate BETWEEN @From AND DATEADD(dd, +1, @To)		
+				
+				
+-- Journal
+INSERT INTO @Activities
+	SELECT DISTINCT Leads.ItemID, Journal.ItemID, Journal.EventStart, Journal.EventEnd, Journal.FileAs,  dbo.Translate('Journal'), Users.FileAs, 0 ,2, NULL,
+		'eWay://Journal/' + CAST(Journal.ItemID AS NVARCHAR(256)) AS Link
+	FROM @Leads Leads
+		INNER JOIN dbo.Relations LeadsToJournalRelations ON Leads.Itemid = LeadsToJournalRelations.ItemGUID1
+			AND LeadsToJournalRelations.ItemState &lt;&gt; 3
+		INNER JOIN dbo.Journal ON LeadsToJournalRelations.ItemGUID2 = Journal.ItemId 
+			AND Journal.ItemState &lt;&gt; 3
+			AND Journal.[System] &lt;&gt; 1
+		INNER JOIN dbo.Users ON Journal.OwnerGUID = Users.ItemID
+			AND Users.ItemState &lt;&gt; 3
+	WHERE Journal.EventStart BETWEEN @From AND DATEADD(dd, +1, @To)
+				
+-- Documents	
+INSERT INTO @Activities
+	SELECT DISTINCT Leads.ItemID, Documents.ItemID, Documents.ItemCreated, NULL, Documents.FileAs,  dbo.Translate('Document'), Users.FileAs, 0 ,2, NULL,
+		'eWay://Documents/' + cast(Documents.ItemID AS NVARCHAR(256)) AS Link
+	FROM @Leads Leads 
+		INNER JOIN dbo.Relations LeadsToDocumentsRelations ON Leads.Itemid = LeadsToDocumentsRelations.ItemGUID1
+			AND LeadsToDocumentsRelations.ItemState &lt;&gt; 3
+		INNER JOIN dbo.Documents ON LeadsToDocumentsRelations.ItemGUID2 = Documents.ItemId
+			AND Documents.ItemState &lt;&gt; 3
+		INNER JOIN dbo.Users ON Documents.OwnerGUID = Users.ItemID
+			AND Users.ItemState &lt;&gt; 3
+	WHERE Documents.ItemCreated BETWEEN @From AND DATEADD(dd, +1, @To)
+
+-- Emails	
+INSERT INTO @Activities
+	SELECT DISTINCT Leads.ItemID, Emails.ItemID, Emails.ItemCreated, null, Emails.FileAs,  dbo.Translate('Email'), Users.FileAs, 0 ,2, NULL,
+		'eWay://Emails/' + cast(Emails.ItemID AS NVARCHAR(256)) AS Link
+	FROM @Leads Leads 
+		INNER JOIN dbo.Relations LeadsToEmailsRelations ON Leads.Itemid = LeadsToEmailsRelations.ItemGUID1
+			AND LeadsToEmailsRelations.ItemState &lt;&gt; 3
+		INNER JOIN dbo.Emails ON LeadsToEmailsRelations.ItemGUID2 = Emails.ItemId
+			AND Emails.ItemState &lt;&gt; 3
+		INNER JOIN dbo.Users ON Emails.OwnerGUID = Users.ItemID
+			AND Users.ItemState &lt;&gt; 3
+	WHERE Emails.ItemCreated BETWEEN @From and DATEADD(dd, +1, @To)	
+				
+-- Work Reports	
+INSERT INTO @Activities
+	SELECT DISTINCT Leads.ItemID, WorkReports.ItemID, WorkReports.[Date], NULL, WorkReports.FileAs,  dbo.Translate('Work Report'), Users.FileAs, 0 ,2, NULL,
+		'eWay://WorkReports/' + CAST(WorkReports.ItemID AS NVARCHAR(256)) AS Link
+	FROM @Leads Leads
+		INNER JOIN dbo.Relations LeadsToWorkReportRelations ON Leads.Itemid = LeadsToWorkReportRelations.ItemGUID1
+			AND LeadsToWorkReportRelations.ItemState &lt;&gt; 3
+		INNER JOIN dbo.WorkReports ON LeadsToWorkReportRelations.ItemGUID2 = WorkReports.ItemId
+			AND WorkReports.ItemState &lt;&gt; 3
+		INNER JOIN dbo.Users ON WorkReports.OwnerGUID = Users.ItemID
+			AND Users.ItemState &lt;&gt; 3
+	WHERE WorkReports.[Date] BETWEEN @From and DATEADD(dd, +1, @To)
+
+-- Temp table for all data
+DECLARE @t TABLE
+(
+	-- lead details
+	 leadGUID UNIQUEIDENTIFIER
+	,leadName NVARCHAR(256)
+	,customerName NVARCHAR(256)
+	,contactPerson NVARCHAR(256)
+	,leadState NVARCHAR(256)
+	,leadDate DATETIME
+	,leadPrice FLOAT
+	,leadProbability FLOAT
+	,userName NVARCHAR(255)
+	,link NVARCHAR(256)
+	,currency NVARCHAR(256)
+	-- records
+    ,itemGUID UNIQUEIDENTIFIER
+	,startDate DATETIME
+	,endDate DATETIME
+	,itemSubject NVARCHAR(1280)
+	,itemType NVARCHAR(256)
+	,itemOwner NVARCHAR(256)
+	,isInFuture BIT
+	,itemTypeOrder TINYINT
+	,dateToView NVARCHAR(256)
+	,activityLink NVARCHAR(256)
+	,translation NVARCHAR(50)
+)
+
+-- ALL view and ACTIVITY view contains all leads (regardless lead state) with an activity within given time 
+IF ( @ICL = 'All Deals' OR @ICL = 'Deals With Activity' )
+	INSERT INTO @t
+		SELECT 
+			l.ItemID, l.FileAs, l.Customer, l.ContactPerson, l.En, 
+			l.ItemCreated, l.Price, l.Probability, l.OwnerName, l.link, l.Currency,
+			a.ItemGUID, a.StartDate, a.EndDate, a.ItemSubject, a.ItemType, 
+			a.ItemOwner, a.isInFuture, a.ItemTypeOrder, a.DateToView, a.link, dbo.Translate('Task')
+		FROM @Leads l			
+			INNER JOIN @Activities a
+				ON l.ItemID = A.LeadGUID
+			
+-- ALL View contains (from previous IF) leads with activity, now we add leads without activity that were created within given time 
+IF ( @ICL = 'All Deals' )
+	INSERT INTO @t
+		SELECT 
+			l.ItemID, l.FileAs, l.Customer, l.ContactPerson, l.En, 
+			l.ItemCreated, l.Price, l.Probability, l.OwnerName, l.link, l.Currency,
+			null, null, null, null, null, null, null, null, null, null, dbo.Translate('Task')
+		FROM @Leads l
+		WHERE l.ItemID NOT IN ( SELECT LeadGUID FROM @Activities )
+			AND l.ItemCreated BETWEEN @From and DATEADD(dd, +1, @To) -- Within given time
+					
+/*
+ * NO ACTIVITY view contains 
+ *		1) all leads created within the given time without activity within the given time (regardless lead state)
+ *		2) all OPEN leads without activity within the given time (regardless lead state)
+ */ 
+IF (@ICL = 'Deals Without Activity')
+	INSERT INTO @t
+		SELECT 
+			l.ItemID, l.FileAs, l.Customer, l.ContactPerson, l.En, 
+			l.ItemCreated, l.Price, l.Probability, l.OwnerName, l.link, l.Currency,
+			null, null, null, null, null, null, null, null, null, null, dbo.Translate('Task')
+		FROM @Leads l
+		INNER JOIN vw_Leads VWL ON l.ItemID = VWL.ItemID
+		WHERE l.ItemID NOT IN ( SELECT LeadGUID FROM @Activities )-- Without activity (eliminate duplicities)
+			 AND	( l.ItemCreated BETWEEN @From and DATEADD(dd, +1, @To) )-- Within given time (case 1)
+				
+IF (@ICL = 'Deals Without Next Step')
+	INSERT INTO @t
+		SELECT 
+			l.ItemID, l.FileAs, l.Customer, l.ContactPerson, l.En, 
+			l.ItemCreated, l.Price, l.Probability, l.OwnerName, l.link, l.Currency,
+			a.ItemGUID, a.StartDate, a.EndDate, a.ItemSubject, a.ItemType, 
+			a.ItemOwner, a.isInFuture, a.ItemTypeOrder, a.DateToView, a.link, dbo.Translate('Task')
+		FROM @Leads l
+	     INNER JOIN vw_Leads VWL ON l.ItemID = VWL.ItemID			
+	     LEFT JOIN @Activities a ON l.ItemID = A.LeadGUID
+		WHERE l.ItemID NOT IN (SELECT leadGUID FROM @Activities WHERE isInFuture = 1)
+
+-- Update some data
+UPDATE @t SET dateToView = 
+	CASE WHEN startDate is not null and endDate is not null THEN dbo.GetDateInNVarchar(startDate) + ' - ' + dbo.GetDateInNVarchar(endDate) 
+		 WHEN startDate is not null and endDate is null THEN dbo.GetDateInNVarchar(startDate)	
+		  WHEN startDate is null and endDate is not null THEN dbo.GetDateInNVarchar(endDate)
+		  ELSE ''
+		  END;
+
+-- Return result table
+SELECT * FROM @t</CommandText>
+        <rd:UseGenericDesigner>true</rd:UseGenericDesigner>
+      </Query>
+      <Fields>
+        <Field Name="leadGUID">
+          <DataField>leadGUID</DataField>
+          <rd:TypeName>System.Guid</rd:TypeName>
+        </Field>
+        <Field Name="leadName">
+          <DataField>leadName</DataField>
+          <rd:TypeName>System.String</rd:TypeName>
+        </Field>
+        <Field Name="customerName">
+          <DataField>customerName</DataField>
+          <rd:TypeName>System.String</rd:TypeName>
+        </Field>
+        <Field Name="contactPerson">
+          <DataField>contactPerson</DataField>
+          <rd:TypeName>System.String</rd:TypeName>
+        </Field>
+        <Field Name="leadState">
+          <DataField>leadState</DataField>
+          <rd:TypeName>System.String</rd:TypeName>
+        </Field>
+        <Field Name="leadDate">
+          <DataField>leadDate</DataField>
+          <rd:TypeName>System.DateTime</rd:TypeName>
+        </Field>
+        <Field Name="leadPrice">
+          <DataField>leadPrice</DataField>
+          <rd:TypeName>System.Double</rd:TypeName>
+        </Field>
+        <Field Name="leadProbability">
+          <DataField>leadProbability</DataField>
+          <rd:TypeName>System.Double</rd:TypeName>
+        </Field>
+        <Field Name="userName">
+          <DataField>userName</DataField>
+          <rd:TypeName>System.String</rd:TypeName>
+        </Field>
+        <Field Name="link">
+          <DataField>link</DataField>
+          <rd:TypeName>System.String</rd:TypeName>
+        </Field>
+        <Field Name="currency">
+          <DataField>currency</DataField>
+          <rd:TypeName>System.String</rd:TypeName>
+        </Field>
+        <Field Name="itemGUID">
+          <DataField>itemGUID</DataField>
+          <rd:TypeName>System.Guid</rd:TypeName>
+        </Field>
+        <Field Name="startDate">
+          <DataField>startDate</DataField>
+          <rd:TypeName>System.DateTime</rd:TypeName>
+        </Field>
+        <Field Name="endDate">
+          <DataField>endDate</DataField>
+          <rd:TypeName>System.DateTime</rd:TypeName>
+        </Field>
+        <Field Name="itemSubject">
+          <DataField>itemSubject</DataField>
+          <rd:TypeName>System.String</rd:TypeName>
+        </Field>
+        <Field Name="itemType">
+          <DataField>itemType</DataField>
+          <rd:TypeName>System.String</rd:TypeName>
+        </Field>
+        <Field Name="itemOwner">
+          <DataField>itemOwner</DataField>
+          <rd:TypeName>System.String</rd:TypeName>
+        </Field>
+        <Field Name="isInFuture">
+          <DataField>isInFuture</DataField>
+          <rd:TypeName>System.Boolean</rd:TypeName>
+        </Field>
+        <Field Name="itemTypeOrder">
+          <DataField>itemTypeOrder</DataField>
+          <rd:TypeName>System.Byte</rd:TypeName>
+        </Field>
+        <Field Name="dateToView">
+          <DataField>dateToView</DataField>
+          <rd:TypeName>System.String</rd:TypeName>
+        </Field>
+        <Field Name="activityLink">
+          <DataField>activityLink</DataField>
+          <rd:TypeName>System.String</rd:TypeName>
+        </Field>
+        <Field Name="translation">
+          <DataField>translation</DataField>
+          <rd:TypeName>System.String</rd:TypeName>
+        </Field>
+      </Fields>
+    </DataSet>
+    <DataSet Name="UserName">
+      <Query>
+        <DataSourceName>LocalDatabase</DataSourceName>
+        <QueryParameters>
+          <QueryParameter Name="@SalesManager">
+            <Value>=Parameters!SalesManager.Value</Value>
+          </QueryParameter>
+        </QueryParameters>
+        <CommandText>if @SalesManager = '11111111-1111-1111-1111-111111111111'
+select '('+dbo.Translate('All')+')' as FileAs
+else
+select FileAs from Users where ItemID = @SalesManager</CommandText>
+        <rd:UseGenericDesigner>true</rd:UseGenericDesigner>
+      </Query>
+      <Fields>
+        <Field Name="FileAs">
+          <DataField>FileAs</DataField>
+          <rd:TypeName>System.String</rd:TypeName>
+        </Field>
+      </Fields>
+    </DataSet>
+    <DataSet Name="SpecialFilter">
+      <Query>
+        <DataSourceName>LocalDatabase</DataSourceName>
+        <CommandText>select 'All Deals' as name, dbo.Translate('AllDeals') as nameLoc
+union all
+select 'Deals Without Activity', dbo.Translate('DealsWithoutActivity')
+union all
+select 'Deals With Activity', dbo.Translate('DealsWithActivity')
+union all
+select 'Deals Without Next Step', dbo.Translate('DealsWithoutNextStep')</CommandText>
+        <rd:UseGenericDesigner>true</rd:UseGenericDesigner>
+      </Query>
+      <Fields>
+        <Field Name="name">
+          <DataField>name</DataField>
+          <rd:TypeName>System.String</rd:TypeName>
+        </Field>
+        <Field Name="nameLoc">
+          <DataField>nameLoc</DataField>
+          <rd:TypeName>System.String</rd:TypeName>
+        </Field>
+      </Fields>
+    </DataSet>
+    <DataSet Name="DefaultValues">
+      <Query>
+        <DataSourceName>LocalDatabase</DataSourceName>
+        <CommandType>StoredProcedure</CommandType>
+        <CommandText>eWaySPLocal_GetReportDefaultValues</CommandText>
+      </Query>
+      <Fields>
+        <Field Name="Today">
+          <DataField>Today</DataField>
+          <rd:TypeName>System.DateTime</rd:TypeName>
+        </Field>
+        <Field Name="Tomorrow">
+          <DataField>Tomorrow</DataField>
+          <rd:TypeName>System.DateTime</rd:TypeName>
+        </Field>
+        <Field Name="FirstDayOfThisMonth">
+          <DataField>FirstDayOfThisMonth</DataField>
+          <rd:TypeName>System.DateTime</rd:TypeName>
+        </Field>
+        <Field Name="FirstDayOfNextMonth">
+          <DataField>FirstDayOfNextMonth</DataField>
+          <rd:TypeName>System.DateTime</rd:TypeName>
+        </Field>
+        <Field Name="LastDayOfThisMonth">
+          <DataField>LastDayOfThisMonth</DataField>
+          <rd:TypeName>System.DateTime</rd:TypeName>
+        </Field>
+        <Field Name="FirstDayOfThisYear">
+          <DataField>FirstDayOfThisYear</DataField>
+          <rd:TypeName>System.DateTime</rd:TypeName>
+        </Field>
+        <Field Name="FirstDayOfNextYear">
+          <DataField>FirstDayOfNextYear</DataField>
+          <rd:TypeName>System.DateTime</rd:TypeName>
+        </Field>
+        <Field Name="LastDayOfThisYear">
+          <DataField>LastDayOfThisYear</DataField>
+          <rd:TypeName>System.DateTime</rd:TypeName>
+        </Field>
+      </Fields>
+    </DataSet>
+    <DataSet Name="LeadTypes">
+      <Query>
+        <DataSourceName>LocalDatabase</DataSourceName>
+        <CommandText>SELECT ItemID, dbo.TranslateEnum(ItemID) AS en, FileAs AS [Rank]
+FROM EnumValues 
+WHERE EnumType = (SELECT ItemID FROM EnumTypes WHERE EnumName = N'LeadType')
+
+UNION ALL
+
+SELECT '00000000-0000-0000-0000-000000000000', '('+dbo.Translate('All')+')', NULL
+
+ORDER BY [Rank], ItemID</CommandText>
+        <rd:UseGenericDesigner>true</rd:UseGenericDesigner>
+      </Query>
+      <Fields>
+        <Field Name="ItemID">
+          <DataField>ItemID</DataField>
+          <rd:TypeName>System.Guid</rd:TypeName>
+        </Field>
+        <Field Name="en">
+          <DataField>en</DataField>
+          <rd:TypeName>System.String</rd:TypeName>
+        </Field>
+        <Field Name="Rank">
+          <DataField>Rank</DataField>
+          <rd:TypeName>System.String</rd:TypeName>
+        </Field>
+      </Fields>
+    </DataSet>
+  </DataSets>
+  <ReportSections>
+    <ReportSection>
+      <Body>
+        <ReportItems>
+          <Tablix Name="table1">
+            <TablixBody>
+              <TablixColumns>
+                <TablixColumn>
+                  <Width>3.98828cm</Width>
+                </TablixColumn>
+                <TablixColumn>
+                  <Width>4.23754cm</Width>
+                </TablixColumn>
+                <TablixColumn>
+                  <Width>6.48095cm</Width>
+                </TablixColumn>
+                <TablixColumn>
+                  <Width>2.24341cm</Width>
+                </TablixColumn>
+                <TablixColumn>
+                  <Width>3.24047cm</Width>
+                </TablixColumn>
+                <TablixColumn>
+                  <Width>2.74194cm</Width>
+                </TablixColumn>
+                <TablixColumn>
+                  <Width>2.07328cm</Width>
+                </TablixColumn>
+                <TablixColumn>
+                  <Width>1.99414cm</Width>
+                </TablixColumn>
+              </TablixColumns>
+              <TablixRows>
+                <TablixRow>
+                  <Height>0.5cm</Height>
+                  <TablixCells>
+                    <TablixCell>
+                      <CellContents>
+                        <Textbox Name="textbox1">
+                          <CanGrow>true</CanGrow>
+                          <KeepTogether>true</KeepTogether>
+                          <Paragraphs>
+                            <Paragraph>
+                              <TextRuns>
+                                <TextRun>
+                                  <Value rd:LocID="Customer" xmlns:p18="http://schemas.microsoft.com/SQLServer/reporting/reportdesigner">Customer</Value>
+                                  <Style>
+                                    <FontFamily>Tahoma</FontFamily>
+                                    <FontSize>8pt</FontSize>
+                                    <FontWeight>Bold</FontWeight>
+                                  </Style>
+                                </TextRun>
+                              </TextRuns>
+                              <Style />
+                            </Paragraph>
+                          </Paragraphs>
+                          <rd:DefaultName>textbox1</rd:DefaultName>
+                          <ZIndex>21</ZIndex>
+                          <Style>
+                            <BackgroundColor>#c2d9f0</BackgroundColor>
+                            <PaddingLeft>2pt</PaddingLeft>
+                            <PaddingRight>2pt</PaddingRight>
+                            <PaddingTop>2pt</PaddingTop>
+                            <PaddingBottom>2pt</PaddingBottom>
+                          </Style>
+                        </Textbox>
+                      </CellContents>
+                    </TablixCell>
+                    <TablixCell>
+                      <CellContents>
+                        <Textbox Name="textbox2">
+                          <CanGrow>true</CanGrow>
+                          <KeepTogether>true</KeepTogether>
+                          <Paragraphs>
+                            <Paragraph>
+                              <TextRuns>
+                                <TextRun>
+                                  <Value rd:LocID="Contact" xmlns:p18="http://schemas.microsoft.com/SQLServer/reporting/reportdesigner">Contact Person</Value>
+                                  <Style>
+                                    <FontFamily>Tahoma</FontFamily>
+                                    <FontSize>8pt</FontSize>
+                                    <FontWeight>Bold</FontWeight>
+                                  </Style>
+                                </TextRun>
+                              </TextRuns>
+                              <Style />
+                            </Paragraph>
+                          </Paragraphs>
+                          <rd:DefaultName>textbox2</rd:DefaultName>
+                          <ZIndex>20</ZIndex>
+                          <Style>
+                            <BackgroundColor>#c2d9f0</BackgroundColor>
+                            <PaddingLeft>2pt</PaddingLeft>
+                            <PaddingRight>2pt</PaddingRight>
+                            <PaddingTop>2pt</PaddingTop>
+                            <PaddingBottom>2pt</PaddingBottom>
+                          </Style>
+                        </Textbox>
+                      </CellContents>
+                    </TablixCell>
+                    <TablixCell>
+                      <CellContents>
+                        <Textbox Name="textbox3">
+                          <CanGrow>true</CanGrow>
+                          <KeepTogether>true</KeepTogether>
+                          <Paragraphs>
+                            <Paragraph>
+                              <TextRuns>
+                                <TextRun>
+                                  <Value rd:LocID="Name" xmlns:p18="http://schemas.microsoft.com/SQLServer/reporting/reportdesigner">Deal Name</Value>
+                                  <Style>
+                                    <FontFamily>Tahoma</FontFamily>
+                                    <FontSize>8pt</FontSize>
+                                    <FontWeight>Bold</FontWeight>
+                                  </Style>
+                                </TextRun>
+                              </TextRuns>
+                              <Style />
+                            </Paragraph>
+                          </Paragraphs>
+                          <rd:DefaultName>textbox3</rd:DefaultName>
+                          <ZIndex>19</ZIndex>
+                          <Style>
+                            <BackgroundColor>#c2d9f0</BackgroundColor>
+                            <PaddingLeft>2pt</PaddingLeft>
+                            <PaddingRight>2pt</PaddingRight>
+                            <PaddingTop>2pt</PaddingTop>
+                            <PaddingBottom>2pt</PaddingBottom>
+                          </Style>
+                        </Textbox>
+                      </CellContents>
+                    </TablixCell>
+                    <TablixCell>
+                      <CellContents>
+                        <Textbox Name="textbox4">
+                          <CanGrow>true</CanGrow>
+                          <KeepTogether>true</KeepTogether>
+                          <Paragraphs>
+                            <Paragraph>
+                              <TextRuns>
+                                <TextRun>
+                                  <Value rd:LocID="Status" xmlns:p18="http://schemas.microsoft.com/SQLServer/reporting/reportdesigner">Status</Value>
+                                  <Style>
+                                    <FontFamily>Tahoma</FontFamily>
+                                    <FontSize>8pt</FontSize>
+                                    <FontWeight>Bold</FontWeight>
+                                  </Style>
+                                </TextRun>
+                              </TextRuns>
+                              <Style />
+                            </Paragraph>
+                          </Paragraphs>
+                          <rd:DefaultName>textbox4</rd:DefaultName>
+                          <ZIndex>18</ZIndex>
+                          <Style>
+                            <BackgroundColor>#c2d9f0</BackgroundColor>
+                            <PaddingLeft>2pt</PaddingLeft>
+                            <PaddingRight>2pt</PaddingRight>
+                            <PaddingTop>2pt</PaddingTop>
+                            <PaddingBottom>2pt</PaddingBottom>
+                          </Style>
+                        </Textbox>
+                      </CellContents>
+                    </TablixCell>
+                    <TablixCell>
+                      <CellContents>
+                        <Textbox Name="textbox23">
+                          <CanGrow>true</CanGrow>
+                          <KeepTogether>true</KeepTogether>
+                          <Paragraphs>
+                            <Paragraph>
+                              <TextRuns>
+                                <TextRun>
+                                  <Value rd:LocID="Owner" xmlns:p18="http://schemas.microsoft.com/SQLServer/reporting/reportdesigner">Owner</Value>
+                                  <Style>
+                                    <FontFamily>Tahoma</FontFamily>
+                                    <FontSize>8pt</FontSize>
+                                    <FontWeight>Bold</FontWeight>
+                                  </Style>
+                                </TextRun>
+                              </TextRuns>
+                              <Style />
+                            </Paragraph>
+                          </Paragraphs>
+                          <rd:DefaultName>textbox23</rd:DefaultName>
+                          <ZIndex>17</ZIndex>
+                          <Style>
+                            <BackgroundColor>#c2d9f0</BackgroundColor>
+                            <PaddingLeft>2pt</PaddingLeft>
+                            <PaddingRight>2pt</PaddingRight>
+                            <PaddingTop>2pt</PaddingTop>
+                            <PaddingBottom>2pt</PaddingBottom>
+                          </Style>
+                        </Textbox>
+                      </CellContents>
+                    </TablixCell>
+                    <TablixCell>
+                      <CellContents>
+                        <Textbox Name="textbox5">
+                          <CanGrow>true</CanGrow>
+                          <KeepTogether>true</KeepTogether>
+                          <Paragraphs>
+                            <Paragraph>
+                              <TextRuns>
+                                <TextRun>
+                                  <Value rd:LocID="Date" xmlns:p18="http://schemas.microsoft.com/SQLServer/reporting/reportdesigner">Date</Value>
+                                  <Style>
+                                    <FontFamily>Tahoma</FontFamily>
+                                    <FontSize>8pt</FontSize>
+                                    <FontWeight>Bold</FontWeight>
+                                  </Style>
+                                </TextRun>
+                              </TextRuns>
+                              <Style />
+                            </Paragraph>
+                          </Paragraphs>
+                          <rd:DefaultName>textbox5</rd:DefaultName>
+                          <ZIndex>16</ZIndex>
+                          <Style>
+                            <BackgroundColor>#c2d9f0</BackgroundColor>
+                            <PaddingLeft>2pt</PaddingLeft>
+                            <PaddingRight>2pt</PaddingRight>
+                            <PaddingTop>2pt</PaddingTop>
+                            <PaddingBottom>2pt</PaddingBottom>
+                          </Style>
+                        </Textbox>
+                      </CellContents>
+                    </TablixCell>
+                    <TablixCell>
+                      <CellContents>
+                        <Textbox Name="textbox37">
+                          <CanGrow>true</CanGrow>
+                          <KeepTogether>true</KeepTogether>
+                          <Paragraphs>
+                            <Paragraph>
+                              <TextRuns>
+                                <TextRun>
+                                  <Value rd:LocID="Price" xmlns:p18="http://schemas.microsoft.com/SQLServer/reporting/reportdesigner">Price</Value>
+                                  <Style>
+                                    <FontFamily>Tahoma</FontFamily>
+                                    <FontSize>8pt</FontSize>
+                                    <FontWeight>Bold</FontWeight>
+                                  </Style>
+                                </TextRun>
+                              </TextRuns>
+                              <Style>
+                                <FontFamily />
+                                <TextAlign>Left</TextAlign>
+                              </Style>
+                            </Paragraph>
+                          </Paragraphs>
+                          <rd:DefaultName>textbox37</rd:DefaultName>
+                          <ZIndex>15</ZIndex>
+                          <Style>
+                            <BackgroundColor>#c2d9f0</BackgroundColor>
+                            <PaddingLeft>2pt</PaddingLeft>
+                            <PaddingRight>2pt</PaddingRight>
+                            <PaddingTop>2pt</PaddingTop>
+                            <PaddingBottom>2pt</PaddingBottom>
+                          </Style>
+                        </Textbox>
+                      </CellContents>
+                    </TablixCell>
+                    <TablixCell>
+                      <CellContents>
+                        <Textbox Name="textbox24">
+                          <CanGrow>true</CanGrow>
+                          <KeepTogether>true</KeepTogether>
+                          <Paragraphs>
+                            <Paragraph>
+                              <TextRuns>
+                                <TextRun>
+                                  <Value rd:LocID="ProbabilityShort" xmlns:p18="http://schemas.microsoft.com/SQLServer/reporting/reportdesigner">Probability</Value>
+                                  <Style>
+                                    <FontFamily>Tahoma</FontFamily>
+                                    <FontSize>8pt</FontSize>
+                                    <FontWeight>Bold</FontWeight>
+                                  </Style>
+                                </TextRun>
+                              </TextRuns>
+                              <Style>
+                                <FontFamily />
+                                <TextAlign>Left</TextAlign>
+                              </Style>
+                            </Paragraph>
+                          </Paragraphs>
+                          <rd:DefaultName>textbox24</rd:DefaultName>
+                          <ZIndex>14</ZIndex>
+                          <Style>
+                            <BackgroundColor>#c2d9f0</BackgroundColor>
+                            <PaddingLeft>2pt</PaddingLeft>
+                            <PaddingRight>2pt</PaddingRight>
+                            <PaddingTop>2pt</PaddingTop>
+                            <PaddingBottom>2pt</PaddingBottom>
+                          </Style>
+                        </Textbox>
+                      </CellContents>
+                    </TablixCell>
+                  </TablixCells>
+                </TablixRow>
+                <TablixRow>
+                  <Height>0.5cm</Height>
+                  <TablixCells>
+                    <TablixCell>
+                      <CellContents>
+                        <Textbox Name="customerName_1">
+                          <CanGrow>true</CanGrow>
+                          <KeepTogether>true</KeepTogether>
+                          <Paragraphs>
+                            <Paragraph>
+                              <TextRuns>
+                                <TextRun>
+                                  <Value>=Fields!customerName.Value</Value>
+                                  <Style>
+                                    <FontFamily>Tahoma</FontFamily>
+                                    <FontSize>8pt</FontSize>
+                                  </Style>
+                                </TextRun>
+                              </TextRuns>
+                              <Style />
+                            </Paragraph>
+                          </Paragraphs>
+                          <rd:DefaultName>customerName_1</rd:DefaultName>
+                          <ZIndex>13</ZIndex>
+                          <Style>
+                            <BackgroundColor>#d8e7f5</BackgroundColor>
+                            <PaddingLeft>2pt</PaddingLeft>
+                            <PaddingRight>2pt</PaddingRight>
+                            <PaddingTop>2pt</PaddingTop>
+                            <PaddingBottom>2pt</PaddingBottom>
+                          </Style>
+                        </Textbox>
+                      </CellContents>
+                    </TablixCell>
+                    <TablixCell>
+                      <CellContents>
+                        <Textbox Name="contactPerson_1">
+                          <CanGrow>true</CanGrow>
+                          <KeepTogether>true</KeepTogether>
+                          <Paragraphs>
+                            <Paragraph>
+                              <TextRuns>
+                                <TextRun>
+                                  <Value>=Fields!contactPerson.Value</Value>
+                                  <Style>
+                                    <FontFamily>Tahoma</FontFamily>
+                                    <FontSize>8pt</FontSize>
+                                  </Style>
+                                </TextRun>
+                              </TextRuns>
+                              <Style />
+                            </Paragraph>
+                          </Paragraphs>
+                          <rd:DefaultName>contactPerson_1</rd:DefaultName>
+                          <ZIndex>12</ZIndex>
+                          <Style>
+                            <BackgroundColor>#d8e7f5</BackgroundColor>
+                            <PaddingLeft>2pt</PaddingLeft>
+                            <PaddingRight>2pt</PaddingRight>
+                            <PaddingTop>2pt</PaddingTop>
+                            <PaddingBottom>2pt</PaddingBottom>
+                          </Style>
+                        </Textbox>
+                      </CellContents>
+                    </TablixCell>
+                    <TablixCell>
+                      <CellContents>
+                        <Textbox Name="leadName_1">
+                          <CanGrow>true</CanGrow>
+                          <KeepTogether>true</KeepTogether>
+                          <Paragraphs>
+                            <Paragraph>
+                              <TextRuns>
+                                <TextRun>
+                                  <Value>=Fields!leadName.Value</Value>
+                                  <Style>
+                                    <FontFamily>Tahoma</FontFamily>
+                                    <FontSize>8pt</FontSize>
+                                    <TextDecoration>Underline</TextDecoration>
+                                  </Style>
+                                </TextRun>
+                              </TextRuns>
+                              <Style />
+                            </Paragraph>
+                          </Paragraphs>
+                          <rd:DefaultName>leadName_1</rd:DefaultName>
+                          <ActionInfo>
+                            <Actions>
+                              <Action>
+                                <Hyperlink>=Fields!link.Value</Hyperlink>
+                              </Action>
+                            </Actions>
+                          </ActionInfo>
+                          <ZIndex>11</ZIndex>
+                          <Style>
+                            <BackgroundColor>#d8e7f5</BackgroundColor>
+                            <PaddingLeft>2pt</PaddingLeft>
+                            <PaddingRight>2pt</PaddingRight>
+                            <PaddingTop>2pt</PaddingTop>
+                            <PaddingBottom>2pt</PaddingBottom>
+                          </Style>
+                        </Textbox>
+                      </CellContents>
+                    </TablixCell>
+                    <TablixCell>
+                      <CellContents>
+                        <Textbox Name="leadState">
+                          <CanGrow>true</CanGrow>
+                          <KeepTogether>true</KeepTogether>
+                          <Paragraphs>
+                            <Paragraph>
+                              <TextRuns>
+                                <TextRun>
+                                  <Value>=Fields!leadState.Value</Value>
+                                  <Style>
+                                    <FontFamily>Tahoma</FontFamily>
+                                    <FontSize>8pt</FontSize>
+                                  </Style>
+                                </TextRun>
+                              </TextRuns>
+                              <Style />
+                            </Paragraph>
+                          </Paragraphs>
+                          <rd:DefaultName>leadState</rd:DefaultName>
+                          <ZIndex>10</ZIndex>
+                          <Style>
+                            <BackgroundColor>#d8e7f5</BackgroundColor>
+                            <PaddingLeft>2pt</PaddingLeft>
+                            <PaddingRight>2pt</PaddingRight>
+                            <PaddingTop>2pt</PaddingTop>
+                            <PaddingBottom>2pt</PaddingBottom>
+                          </Style>
+                        </Textbox>
+                      </CellContents>
+                    </TablixCell>
+                    <TablixCell>
+                      <CellContents>
+                        <Textbox Name="userName">
+                          <CanGrow>true</CanGrow>
+                          <KeepTogether>true</KeepTogether>
+                          <Paragraphs>
+                            <Paragraph>
+                              <TextRuns>
+                                <TextRun>
+                                  <Value>=Fields!userName.Value</Value>
+                                  <Style>
+                                    <FontFamily>Tahoma</FontFamily>
+                                    <FontSize>8pt</FontSize>
+                                  </Style>
+                                </TextRun>
+                              </TextRuns>
+                              <Style />
+                            </Paragraph>
+                          </Paragraphs>
+                          <rd:DefaultName>userName</rd:DefaultName>
+                          <ZIndex>9</ZIndex>
+                          <Style>
+                            <BackgroundColor>#d8e7f5</BackgroundColor>
+                            <PaddingLeft>2pt</PaddingLeft>
+                            <PaddingRight>2pt</PaddingRight>
+                            <PaddingTop>2pt</PaddingTop>
+                            <PaddingBottom>2pt</PaddingBottom>
+                          </Style>
+                        </Textbox>
+                      </CellContents>
+                    </TablixCell>
+                    <TablixCell>
+                      <CellContents>
+                        <Textbox Name="leadDate">
+                          <CanGrow>true</CanGrow>
+                          <KeepTogether>true</KeepTogether>
+                          <Paragraphs>
+                            <Paragraph>
+                              <TextRuns>
+                                <TextRun>
+                                  <Value>=Fields!leadDate.Value</Value>
+                                  <Style>
+                                    <FontFamily>Tahoma</FontFamily>
+                                    <FontSize>8pt</FontSize>
+                                    <Format>=First(Fields!DateOnlyFormat.Value, "Formats")</Format>
+                                  </Style>
+                                </TextRun>
+                              </TextRuns>
+                              <Style>
+                                <FontFamily />
+                                <TextAlign>Left</TextAlign>
+                              </Style>
+                            </Paragraph>
+                          </Paragraphs>
+                          <rd:DefaultName>leadDate</rd:DefaultName>
+                          <ZIndex>8</ZIndex>
+                          <Style>
+                            <BackgroundColor>#d8e7f5</BackgroundColor>
+                            <PaddingLeft>2pt</PaddingLeft>
+                            <PaddingRight>2pt</PaddingRight>
+                            <PaddingTop>2pt</PaddingTop>
+                            <PaddingBottom>2pt</PaddingBottom>
+                          </Style>
+                        </Textbox>
+                      </CellContents>
+                    </TablixCell>
+                    <TablixCell>
+                      <CellContents>
+                        <Textbox Name="leadPrice">
+                          <CanGrow>true</CanGrow>
+                          <KeepTogether>true</KeepTogether>
+                          <Paragraphs>
+                            <Paragraph>
+                              <TextRuns>
+                                <TextRun>
+                                  <Value>=CStr(Format(Fields!leadPrice.Value, First(Fields!NumberFormat.Value, "Formats"))) + " " + Fields!currency.Value</Value>
+                                  <Style>
+                                    <FontFamily>Tahoma</FontFamily>
+                                    <FontSize>8pt</FontSize>
+                                  </Style>
+                                </TextRun>
+                              </TextRuns>
+                              <Style>
+                                <FontFamily />
+                                <TextAlign>Right</TextAlign>
+                              </Style>
+                            </Paragraph>
+                          </Paragraphs>
+                          <rd:DefaultName>leadPrice</rd:DefaultName>
+                          <ZIndex>7</ZIndex>
+                          <Style>
+                            <BackgroundColor>#d8e7f5</BackgroundColor>
+                            <PaddingLeft>2pt</PaddingLeft>
+                            <PaddingRight>2pt</PaddingRight>
+                            <PaddingTop>2pt</PaddingTop>
+                            <PaddingBottom>2pt</PaddingBottom>
+                          </Style>
+                        </Textbox>
+                      </CellContents>
+                    </TablixCell>
+                    <TablixCell>
+                      <CellContents>
+                        <Textbox Name="leadProbability">
+                          <CanGrow>true</CanGrow>
+                          <KeepTogether>true</KeepTogether>
+                          <Paragraphs>
+                            <Paragraph>
+                              <TextRuns>
+                                <TextRun>
+                                  <Value>=Fields!leadProbability.Value</Value>
+                                  <Style>
+                                    <FontFamily>Tahoma</FontFamily>
+                                    <FontSize>8pt</FontSize>
+                                    <Format>=First(Fields!PercentFormat.Value, "Formats")</Format>
+                                  </Style>
+                                </TextRun>
+                              </TextRuns>
+                              <Style>
+                                <FontFamily />
+                                <TextAlign>Right</TextAlign>
+                              </Style>
+                            </Paragraph>
+                          </Paragraphs>
+                          <rd:DefaultName>leadProbability</rd:DefaultName>
+                          <ZIndex>6</ZIndex>
+                          <Style>
+                            <BackgroundColor>#d8e7f5</BackgroundColor>
+                            <PaddingLeft>2pt</PaddingLeft>
+                            <PaddingRight>2pt</PaddingRight>
+                            <PaddingTop>2pt</PaddingTop>
+                            <PaddingBottom>2pt</PaddingBottom>
+                          </Style>
+                        </Textbox>
+                      </CellContents>
+                    </TablixCell>
+                  </TablixCells>
+                </TablixRow>
+                <TablixRow>
+                  <Height>0.5cm</Height>
+                  <TablixCells>
+                    <TablixCell>
+                      <CellContents>
+                        <Textbox Name="textbox6">
+                          <CanGrow>true</CanGrow>
+                          <KeepTogether>true</KeepTogether>
+                          <Paragraphs>
+                            <Paragraph>
+                              <TextRuns>
+                                <TextRun>
+                                  <Value />
+                                  <Style>
+                                    <FontFamily />
+                                    <Color>=IIF(Fields!itemType.Value = "Task" AND Fields!isInFuture.Value = True AND Fields!endDate.Value &lt; Now(), "Red", "Black")</Color>
+                                  </Style>
+                                </TextRun>
+                              </TextRuns>
+                              <Style />
+                            </Paragraph>
+                          </Paragraphs>
+                          <rd:DefaultName>textbox6</rd:DefaultName>
+                          <ZIndex>5</ZIndex>
+                          <Style>
+                            <FontFamily />
+                            <PaddingLeft>2pt</PaddingLeft>
+                            <PaddingRight>2pt</PaddingRight>
+                            <PaddingTop>2pt</PaddingTop>
+                            <PaddingBottom>2pt</PaddingBottom>
+                          </Style>
+                        </Textbox>
+                      </CellContents>
+                    </TablixCell>
+                    <TablixCell>
+                      <CellContents>
+                        <Textbox Name="translation">
+                          <CanGrow>true</CanGrow>
+                          <KeepTogether>true</KeepTogether>
+                          <Paragraphs>
+                            <Paragraph>
+                              <TextRuns>
+                                <TextRun>
+                                  <Value />
+                                  <Style>
+                                    <FontFamily />
+                                    <Color>=IIF(Fields!itemType.Value = "Task" AND Fields!isInFuture.Value = True AND Fields!endDate.Value &lt; Now(), "Red", "Black")</Color>
+                                  </Style>
+                                </TextRun>
+                              </TextRuns>
+                              <Style />
+                            </Paragraph>
+                          </Paragraphs>
+                          <rd:DefaultName>translation</rd:DefaultName>
+                          <ZIndex>4</ZIndex>
+                          <Style>
+                            <FontFamily />
+                            <PaddingLeft>2pt</PaddingLeft>
+                            <PaddingRight>2pt</PaddingRight>
+                            <PaddingTop>2pt</PaddingTop>
+                            <PaddingBottom>2pt</PaddingBottom>
+                          </Style>
+                        </Textbox>
+                      </CellContents>
+                    </TablixCell>
+                    <TablixCell>
+                      <CellContents>
+                        <Textbox Name="itemSubject_1">
+                          <CanGrow>true</CanGrow>
+                          <KeepTogether>true</KeepTogether>
+                          <Paragraphs>
+                            <Paragraph>
+                              <TextRuns>
+                                <TextRun>
+                                  <Value>=Fields!itemSubject.Value</Value>
+                                  <Style>
+                                    <FontStyle>=iif(Fields!isInFuture.Value = "1", "Italic",  "Normal")</FontStyle>
+                                    <FontFamily>Tahoma</FontFamily>
+                                    <FontSize>8pt</FontSize>
+                                    <TextDecoration>Underline</TextDecoration>
+                                    <Color>=IIF(Fields!itemType.Value = First(Fields!translation.Value)  AND Fields!isInFuture.Value = True AND Fields!endDate.Value &lt; Now(), "Red", "Black")</Color>
+                                  </Style>
+                                </TextRun>
+                              </TextRuns>
+                              <Style />
+                            </Paragraph>
+                          </Paragraphs>
+                          <rd:DefaultName>itemSubject_1</rd:DefaultName>
+                          <ActionInfo>
+                            <Actions>
+                              <Action>
+                                <Hyperlink>=Fields!activityLink.Value</Hyperlink>
+                              </Action>
+                            </Actions>
+                          </ActionInfo>
+                          <ZIndex>3</ZIndex>
+                          <Style>
+                            <PaddingLeft>2pt</PaddingLeft>
+                            <PaddingRight>2pt</PaddingRight>
+                            <PaddingTop>2pt</PaddingTop>
+                            <PaddingBottom>2pt</PaddingBottom>
+                          </Style>
+                        </Textbox>
+                      </CellContents>
+                    </TablixCell>
+                    <TablixCell>
+                      <CellContents>
+                        <Textbox Name="itemType">
+                          <CanGrow>true</CanGrow>
+                          <KeepTogether>true</KeepTogether>
+                          <Paragraphs>
+                            <Paragraph>
+                              <TextRuns>
+                                <TextRun>
+                                  <Value>=Fields!itemType.Value</Value>
+                                  <Style>
+                                    <FontStyle>=iif(Fields!isInFuture.Value = "1", "Italic",  "Normal")</FontStyle>
+                                    <FontFamily>Tahoma</FontFamily>
+                                    <FontSize>8pt</FontSize>
+                                    <Color>=IIF(Fields!itemType.Value = First(Fields!translation.Value)  AND Fields!isInFuture.Value = True AND Fields!endDate.Value &lt; Now(), "Red", "Black")</Color>
+                                  </Style>
+                                </TextRun>
+                              </TextRuns>
+                              <Style />
+                            </Paragraph>
+                          </Paragraphs>
+                          <rd:DefaultName>itemType</rd:DefaultName>
+                          <ZIndex>2</ZIndex>
+                          <Style>
+                            <PaddingLeft>2pt</PaddingLeft>
+                            <PaddingRight>2pt</PaddingRight>
+                            <PaddingTop>2pt</PaddingTop>
+                            <PaddingBottom>2pt</PaddingBottom>
+                          </Style>
+                        </Textbox>
+                      </CellContents>
+                    </TablixCell>
+                    <TablixCell>
+                      <CellContents>
+                        <Textbox Name="itemOwner">
+                          <CanGrow>true</CanGrow>
+                          <KeepTogether>true</KeepTogether>
+                          <Paragraphs>
+                            <Paragraph>
+                              <TextRuns>
+                                <TextRun>
+                                  <Value>=Fields!itemOwner.Value</Value>
+                                  <Style>
+                                    <FontStyle>=iif(Fields!isInFuture.Value = "1", "Italic",  "Normal")</FontStyle>
+                                    <FontFamily>Tahoma</FontFamily>
+                                    <FontSize>8pt</FontSize>
+                                    <Color>=IIF(Fields!itemType.Value = First(Fields!translation.Value) AND Fields!isInFuture.Value = True AND Fields!endDate.Value &lt; Now(), "Red", "Black")</Color>
+                                  </Style>
+                                </TextRun>
+                              </TextRuns>
+                              <Style />
+                            </Paragraph>
+                          </Paragraphs>
+                          <rd:DefaultName>itemOwner</rd:DefaultName>
+                          <ZIndex>1</ZIndex>
+                          <Style>
+                            <PaddingLeft>2pt</PaddingLeft>
+                            <PaddingRight>2pt</PaddingRight>
+                            <PaddingTop>2pt</PaddingTop>
+                            <PaddingBottom>2pt</PaddingBottom>
+                          </Style>
+                        </Textbox>
+                      </CellContents>
+                    </TablixCell>
+                    <TablixCell>
+                      <CellContents>
+                        <Textbox Name="dateToView">
+                          <CanGrow>true</CanGrow>
+                          <KeepTogether>true</KeepTogether>
+                          <Paragraphs>
+                            <Paragraph>
+                              <TextRuns>
+                                <TextRun>
+                                  <Value>=Fields!dateToView.Value</Value>
+                                  <Style>
+                                    <FontStyle>=iif(Fields!isInFuture.Value = "1", "Italic",  "Normal")</FontStyle>
+                                    <FontFamily>Tahoma</FontFamily>
+                                    <FontSize>8pt</FontSize>
+                                    <Color>=IIF(Fields!itemType.Value = First(Fields!translation.Value) AND Fields!isInFuture.Value = True AND Fields!endDate.Value &lt; Now(), "Red", "Black")</Color>
+                                  </Style>
+                                </TextRun>
+                              </TextRuns>
+                              <Style />
+                            </Paragraph>
+                          </Paragraphs>
+                          <rd:DefaultName>dateToView</rd:DefaultName>
+                          <Style>
+                            <PaddingLeft>2pt</PaddingLeft>
+                            <PaddingRight>2pt</PaddingRight>
+                            <PaddingTop>2pt</PaddingTop>
+                            <PaddingBottom>2pt</PaddingBottom>
+                          </Style>
+                        </Textbox>
+                        <ColSpan>3</ColSpan>
+                      </CellContents>
+                    </TablixCell>
+                    <TablixCell />
+                    <TablixCell />
+                  </TablixCells>
+                </TablixRow>
+              </TablixRows>
+            </TablixBody>
+            <TablixColumnHierarchy>
+              <TablixMembers>
+                <TablixMember />
+                <TablixMember />
+                <TablixMember />
+                <TablixMember />
+                <TablixMember />
+                <TablixMember />
+                <TablixMember />
+                <TablixMember />
+              </TablixMembers>
+            </TablixColumnHierarchy>
+            <TablixRowHierarchy>
+              <TablixMembers>
+                <TablixMember>
+                  <KeepWithGroup>After</KeepWithGroup>
+                  <RepeatOnNewPage>true</RepeatOnNewPage>
+                  <KeepTogether>true</KeepTogether>
+                </TablixMember>
+                <TablixMember>
+                  <Group Name="table1_Group1">
+                    <GroupExpressions>
+                      <GroupExpression>=Fields!leadName.Value</GroupExpression>
+                      <GroupExpression>=Fields!leadGUID.Value</GroupExpression>
+                      <GroupExpression>=Fields!customerName.Value</GroupExpression>
+                      <GroupExpression>=Fields!leadState.Value</GroupExpression>
+                      <GroupExpression>=Fields!userName.Value</GroupExpression>
+                      <GroupExpression>=Fields!leadDate.Value</GroupExpression>
+                      <GroupExpression>=Fields!leadPrice.Value</GroupExpression>
+                      <GroupExpression>=Fields!leadProbability.Value</GroupExpression>
+                    </GroupExpressions>
+                  </Group>
+                  <SortExpressions>
+                    <SortExpression>
+                      <Value>=Fields!customerName.Value</Value>
+                    </SortExpression>
+                    <SortExpression>
+                      <Value>=Fields!leadName.Value</Value>
+                    </SortExpression>
+                  </SortExpressions>
+                  <TablixMembers>
+                    <TablixMember>
+                      <KeepWithGroup>After</KeepWithGroup>
+                      <RepeatOnNewPage>true</RepeatOnNewPage>
+                      <KeepTogether>true</KeepTogether>
+                    </TablixMember>
+                    <TablixMember>
+                      <Group Name="table1_Group2">
+                        <GroupExpressions>
+                          <GroupExpression>=Fields!itemGUID.Value</GroupExpression>
+                          <GroupExpression>=Fields!itemSubject.Value</GroupExpression>
+                          <GroupExpression>=Fields!startDate.Value</GroupExpression>
+                          <GroupExpression>=Fields!endDate.Value</GroupExpression>
+                          <GroupExpression>=Fields!itemOwner.Value</GroupExpression>
+                          <GroupExpression>=Fields!itemType.Value</GroupExpression>
+                          <GroupExpression>=Fields!isInFuture.Value</GroupExpression>
+                          <GroupExpression>=Fields!itemTypeOrder.Value</GroupExpression>
+                          <GroupExpression>=Fields!dateToView.Value</GroupExpression>
+                        </GroupExpressions>
+                      </Group>
+                      <SortExpressions>
+                        <SortExpression>
+                          <Value>=Fields!isInFuture.Value</Value>
+                          <Direction>Descending</Direction>
+                        </SortExpression>
+                        <SortExpression>
+                          <Value>=Fields!startDate.Value</Value>
+                          <Direction>Descending</Direction>
+                        </SortExpression>
+                      </SortExpressions>
+                      <TablixMembers>
+                        <TablixMember>
+                          <Visibility>
+                            <Hidden>=iif(IsNothing(Fields!itemGUID.Value), True, False)</Hidden>
+                          </Visibility>
+                          <KeepWithGroup>After</KeepWithGroup>
+                          <KeepTogether>true</KeepTogether>
+                        </TablixMember>
+                      </TablixMembers>
+                    </TablixMember>
+                  </TablixMembers>
+                </TablixMember>
+              </TablixMembers>
+            </TablixRowHierarchy>
+            <RepeatColumnHeaders>true</RepeatColumnHeaders>
+            <DataSetName>Main</DataSetName>
+            <Top>0.5cm</Top>
+            <Left>0.25cm</Left>
+            <Height>1.5cm</Height>
+            <Width>27.00001cm</Width>
+            <Style>
+              <Border>
+                <Color>CornflowerBlue</Color>
+                <Style>Solid</Style>
+              </Border>
+            </Style>
+          </Tablix>
+        </ReportItems>
+        <Height>2cm</Height>
+        <Style />
+      </Body>
+      <Width>27.5cm</Width>
+      <Page>
+        <PageHeader>
+          <Height>0.88594in</Height>
+          <PrintOnFirstPage>true</PrintOnFirstPage>
+          <PrintOnLastPage>true</PrintOnLastPage>
+          <ReportItems>
+            <Textbox Name="textbox32">
+              <CanGrow>true</CanGrow>
+              <KeepTogether>true</KeepTogether>
+              <Paragraphs>
+                <Paragraph>
+                  <TextRuns>
+                    <TextRun>
+                      <Value>=Globals!ExecutionTime</Value>
+                      <Style>
+                        <FontFamily>Tahoma</FontFamily>
+                        <FontSize>8pt</FontSize>
+                        <Format>=Parameters!DateFormat.Value</Format>
+                        <Color>#1e1e1e</Color>
+                      </Style>
+                    </TextRun>
+                  </TextRuns>
+                  <Style>
+                    <TextAlign>Right</TextAlign>
+                  </Style>
+                </Paragraph>
+              </Paragraphs>
+              <Left>12.5cm</Left>
+              <Height>0.5cm</Height>
+              <Width>14.75cm</Width>
+              <Style>
+                <PaddingLeft>2pt</PaddingLeft>
+                <PaddingRight>2pt</PaddingRight>
+                <PaddingTop>2pt</PaddingTop>
+                <PaddingBottom>2pt</PaddingBottom>
+              </Style>
+            </Textbox>
+            <Textbox Name="textbox31">
+              <CanGrow>true</CanGrow>
+              <KeepTogether>true</KeepTogether>
+              <Paragraphs>
+                <Paragraph>
+                  <TextRuns>
+                    <TextRun>
+                      <Value rd:LocID="ActivityOnDeals" xmlns:p12="http://schemas.microsoft.com/SQLServer/reporting/reportdesigner">Activity on Deals</Value>
+                      <Style>
+                        <FontFamily>Tahoma</FontFamily>
+                        <FontWeight>Bold</FontWeight>
+                        <Color>#1e1e1e</Color>
+                      </Style>
+                    </TextRun>
+                  </TextRuns>
+                  <Style>
+                    <TextAlign>Center</TextAlign>
+                  </Style>
+                </Paragraph>
+              </Paragraphs>
+              <Top>0.75cm</Top>
+              <Left>0.25cm</Left>
+              <Height>0.63492cm</Height>
+              <Width>27cm</Width>
+              <ZIndex>1</ZIndex>
+              <Style>
+                <PaddingLeft>2pt</PaddingLeft>
+                <PaddingRight>2pt</PaddingRight>
+                <PaddingTop>2pt</PaddingTop>
+                <PaddingBottom>2pt</PaddingBottom>
+              </Style>
+            </Textbox>
+            <Textbox Name="textbox8">
+              <CanGrow>true</CanGrow>
+              <KeepTogether>true</KeepTogether>
+              <Paragraphs>
+                <Paragraph>
+                  <TextRuns>
+                    <TextRun>
+                      <Value>=Parameters!ReportParameters.Value</Value>
+                      <Style>
+                        <FontFamily>Tahoma</FontFamily>
+                        <FontSize>8pt</FontSize>
+                      </Style>
+                    </TextRun>
+                  </TextRuns>
+                  <Style>
+                    <TextAlign>Center</TextAlign>
+                  </Style>
+                </Paragraph>
+              </Paragraphs>
+              <rd:DefaultName>textbox8</rd:DefaultName>
+              <Top>1.5cm</Top>
+              <Left>0.25cm</Left>
+              <Height>0.63492cm</Height>
+              <Width>27cm</Width>
+              <ZIndex>2</ZIndex>
+              <Style>
+                <PaddingLeft>2pt</PaddingLeft>
+                <PaddingRight>2pt</PaddingRight>
+                <PaddingTop>2pt</PaddingTop>
+                <PaddingBottom>2pt</PaddingBottom>
+              </Style>
+            </Textbox>
+            <Textbox Name="Textbox7">
+              <CanGrow>true</CanGrow>
+              <KeepTogether>true</KeepTogether>
+              <Paragraphs>
+                <Paragraph>
+                  <TextRuns>
+                    <TextRun>
+                      <Value>=Globals!OverallTotalPages</Value>
+                      <Style />
+                    </TextRun>
+                  </TextRuns>
+                  <Style />
+                </Paragraph>
+              </Paragraphs>
+              <rd:DefaultName>Textbox7</rd:DefaultName>
+              <Left>0.25cm</Left>
+              <Height>0.5cm</Height>
+              <Width>2.5cm</Width>
+              <ZIndex>3</ZIndex>
+              <Visibility>
+                <Hidden>true</Hidden>
+              </Visibility>
+              <Style>
+                <Border>
+                  <Style>None</Style>
+                </Border>
+                <PaddingLeft>2pt</PaddingLeft>
+                <PaddingRight>2pt</PaddingRight>
+                <PaddingTop>2pt</PaddingTop>
+                <PaddingBottom>2pt</PaddingBottom>
+              </Style>
+            </Textbox>
+          </ReportItems>
+          <Style />
+        </PageHeader>
+        <PageHeight>21cm</PageHeight>
+        <PageWidth>29.7cm</PageWidth>
+        <InteractiveHeight>29.7cm</InteractiveHeight>
+        <InteractiveWidth>21cm</InteractiveWidth>
+        <LeftMargin>1cm</LeftMargin>
+        <RightMargin>1cm</RightMargin>
+        <TopMargin>1cm</TopMargin>
+        <BottomMargin>1cm</BottomMargin>
+        <ColumnSpacing>1cm</ColumnSpacing>
+        <Style />
+      </Page>
+    </ReportSection>
+  </ReportSections>
+  <ReportParameters>
+    <ReportParameter Name="From">
+      <DataType>DateTime</DataType>
+      <DefaultValue>
+        <DataSetReference>
+          <DataSetName>DefaultValues</DataSetName>
+          <ValueField>FirstDayOfThisMonth</ValueField>
+        </DataSetReference>
+      </DefaultValue>
+      <AllowBlank>true</AllowBlank>
+      <Prompt>LocID:Start</Prompt>
+    </ReportParameter>
+    <ReportParameter Name="To">
+      <DataType>DateTime</DataType>
+      <DefaultValue>
+        <DataSetReference>
+          <DataSetName>DefaultValues</DataSetName>
+          <ValueField>LastDayOfThisMonth</ValueField>
+        </DataSetReference>
+      </DefaultValue>
+      <Prompt>LocID:End</Prompt>
+    </ReportParameter>
+    <ReportParameter Name="SalesManager">
+      <DataType>String</DataType>
+      <AllowBlank>true</AllowBlank>
+      <Prompt>LocID:SalesManager</Prompt>
+      <ValidValues>
+        <DataSetReference>
+          <DataSetName>Users</DataSetName>
+          <ValueField>ItemId</ValueField>
+          <LabelField>FileAs</LabelField>
+        </DataSetReference>
+      </ValidValues>
+    </ReportParameter>
+    <ReportParameter Name="DateFormat">
+      <DataType>String</DataType>
+      <DefaultValue>
+        <DataSetReference>
+          <DataSetName>Formats</DataSetName>
+          <ValueField>DateFormat</ValueField>
+        </DataSetReference>
+      </DefaultValue>
+      <AllowBlank>true</AllowBlank>
+      <Prompt>DateFormat</Prompt>
+      <Hidden>true</Hidden>
+      <ValidValues>
+        <DataSetReference>
+          <DataSetName>Formats</DataSetName>
+          <ValueField>DateFormat</ValueField>
+          <LabelField>DateFormat</LabelField>
+        </DataSetReference>
+      </ValidValues>
+    </ReportParameter>
+    <ReportParameter Name="ICL">
+      <DataType>String</DataType>
+      <DefaultValue>
+        <Values>
+          <Value>All leads</Value>
+        </Values>
+      </DefaultValue>
+      <AllowBlank>true</AllowBlank>
+      <Prompt>LocID:Filter</Prompt>
+      <ValidValues>
+        <DataSetReference>
+          <DataSetName>SpecialFilter</DataSetName>
+          <ValueField>name</ValueField>
+          <LabelField>nameLoc</LabelField>
+        </DataSetReference>
+      </ValidValues>
+    </ReportParameter>
+    <ReportParameter Name="ReportParameters">
+      <DataType>String</DataType>
+      <Nullable>true</Nullable>
+      <DefaultValue>
+        <Values>
+          <Value xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:nil="true" />
+        </Values>
+      </DefaultValue>
+      <AllowBlank>true</AllowBlank>
+      <Prompt>Report_Parameter_5</Prompt>
+      <Hidden>true</Hidden>
+    </ReportParameter>
+    <ReportParameter Name="LeadType">
+      <DataType>String</DataType>
+      <DefaultValue>
+        <DataSetReference>
+          <DataSetName>LeadTypes</DataSetName>
+          <ValueField>ItemID</ValueField>
+        </DataSetReference>
+      </DefaultValue>
+      <AllowBlank>true</AllowBlank>
+      <Prompt>LocID:DealType</Prompt>
+      <ValidValues>
+        <DataSetReference>
+          <DataSetName>LeadTypes</DataSetName>
+          <ValueField>ItemID</ValueField>
+          <LabelField>en</LabelField>
+        </DataSetReference>
+      </ValidValues>
+    </ReportParameter>
+  </ReportParameters>
+  <ReportParametersLayout>
+    <GridLayoutDefinition>
+      <NumberOfColumns>3</NumberOfColumns>
+      <NumberOfRows>4</NumberOfRows>
+      <CellDefinitions>
+        <CellDefinition>
+          <ColumnIndex>0</ColumnIndex>
+          <RowIndex>0</RowIndex>
+          <ParameterName>From</ParameterName>
+        </CellDefinition>
+        <CellDefinition>
+          <ColumnIndex>2</ColumnIndex>
+          <RowIndex>0</RowIndex>
+          <ParameterName>To</ParameterName>
+        </CellDefinition>
+        <CellDefinition>
+          <ColumnIndex>0</ColumnIndex>
+          <RowIndex>1</RowIndex>
+          <ParameterName>SalesManager</ParameterName>
+        </CellDefinition>
+        <CellDefinition>
+          <ColumnIndex>1</ColumnIndex>
+          <RowIndex>1</RowIndex>
+          <ParameterName>DateFormat</ParameterName>
+        </CellDefinition>
+        <CellDefinition>
+          <ColumnIndex>2</ColumnIndex>
+          <RowIndex>1</RowIndex>
+          <ParameterName>ICL</ParameterName>
+        </CellDefinition>
+        <CellDefinition>
+          <ColumnIndex>0</ColumnIndex>
+          <RowIndex>2</RowIndex>
+          <ParameterName>ReportParameters</ParameterName>
+        </CellDefinition>
+        <CellDefinition>
+          <ColumnIndex>0</ColumnIndex>
+          <RowIndex>3</RowIndex>
+          <ParameterName>LeadType</ParameterName>
+        </CellDefinition>
+      </CellDefinitions>
+    </GridLayoutDefinition>
+  </ReportParametersLayout>
+  <Language>en-US</Language>
+  <ConsumeContainerWhitespace>true</ConsumeContainerWhitespace>
+  <rd:ReportUnitType>Cm</rd:ReportUnitType>
+  <rd:ReportID>82735d79-7be2-427d-83c4-272f947ca6e4</rd:ReportID>
+</Report>
