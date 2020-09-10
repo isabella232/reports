@@ -15,7 +15,7 @@ In Visual Studio Installer for SQL Database projects, select SQL Server Data Too
 Install [addon](https://marketplace.visualstudio.com/items?itemName=ProBITools.MicrosoftReportProjectsforVisualStudio) to be able to edit *.rptproj files.
 
 ### Edit report
-Create new file or open existing .rdl file. All examples are from Visual Studio 2019 development environment.
+Create new file or open existing .rdl file.
 
 ### Data Sources
 Reports use data from local eWay-CRM database. Default server instance is (localdb)\EWAYSQL.
@@ -25,7 +25,7 @@ Reports use data from local eWay-CRM database. Default server instance is (local
 ### Datasets
 Create a Dataset to obtain data from Data Source.
 
-![datasets](Images/datasets.png)
+![datasets](Images/dataset.png)
 
 ### Parameters
 There is one mandatory parameter **"ReportParameters"** which needs to be created in each report. This parameter is used to display selected reports parameters to the user - replaced by eWay-CRM at runtime, **not in Visual Studio designer preview**.
