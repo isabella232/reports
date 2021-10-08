@@ -44,7 +44,7 @@ eWay-CRM allows to predefine a report values based on the module from which the 
 
 So for example when the parameter is list of projects. You can add default value **Projects_ItemID**.
 
-![predefined_parameter](Images/![predefined_parameter](Images/predefined_parameter.png)
+![predefined_parameter](Images/predefined_parameter.png)
 
 When the report is opened from a Project detail, the report will be automatically prefilled with that Project.
 
